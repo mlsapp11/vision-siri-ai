@@ -23,11 +23,11 @@ The app currently consists of one Cloudflare Worker:
 
 Current request flow:
 
-1. Siri or another client sends a `POST` request to `/ask` with JSON like `{"question":"..."}`.
-2. The Worker validates the request and reads `GEMINI_API_KEY` from environment bindings.
+1. Siri or another client sends a `POST` request to `/ask` with JSON like `{"question":"..."}` and the shared secret header.
+2. The Worker validates the request, normalizes dictated input, and reads secrets from environment bindings.
 3. The Worker calls Gemini's `generateContent` endpoint using the `google_search` tool.
 4. Gemini returns a short answer plus grounding metadata.
-5. The Worker responds with JSON containing the original question, answer text, and extracted source links.
+5. The Worker responds with plain text for Siri playback, or JSON on the debug route.
 
 This is currently a stateless design:
 
@@ -35,7 +35,7 @@ This is currently a stateless design:
 - no user accounts
 - no file storage
 - no conversation memory
-- no authentication yet on the public endpoint
+- shared-secret authentication on question routes
 
 ## Current behavior
 
@@ -43,17 +43,25 @@ Routes exposed by the Worker:
 
 - `GET /` returns a basic status payload and route list
 - `GET /health` returns whether the Worker is configured plus the active model
-- `POST /ask` accepts a JSON body with a `question` string and returns a grounded answer
+- `POST /ask` accepts a JSON body with a `question` string and returns plain text for Siri
+- `POST /ask.json` accepts the same JSON body and returns debug-friendly JSON
 
 Example request:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/ask \
   -H "content-type: application/json" \
+  -H "x-api-key: your_shared_secret_here" \
   -d '{"question":"What is the weather in New York today?"}'
 ```
 
-Example response shape:
+Example Siri response body:
+
+```text
+Cloudy in New York today with temperatures around the mid-40s.
+```
+
+Example debug response shape:
 
 ```json
 {
@@ -87,18 +95,23 @@ Install dependencies:
 npm install
 ```
 
-Create a local `.dev.vars` file in the project root:
+For deployed testing, you do not need local secret files. Put secrets in Cloudflare and test against the deployed Worker URL.
+
+If you want to run `wrangler dev` locally with authenticated routes, Wrangler needs local secret bindings from a local env file.
+
+Create a local `.dev.vars` file only if you need local authenticated testing:
 
 ```bash
 GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash-lite
+WORKER_SHARED_SECRET=your_shared_secret_here
 ```
 
 Important:
 
-- `.dev.vars` is for local development only
+- `.dev.vars` is optional and should exist only when you truly need local authenticated testing
 - `.dev.vars` is ignored by git and must never be committed
-- use `.dev.vars.example` as the template
+- for your current workflow, testing against the deployed Worker is the simpler and safer path
+- `.env.example` is only for non-secret local overrides such as `GEMINI_MODEL`
 
 Run locally:
 
@@ -111,6 +124,16 @@ Then test:
 ```bash
 curl -X POST http://127.0.0.1:8787/ask \
   -H "content-type: application/json" \
+  -H "x-api-key: your_shared_secret_here" \
+  -d '{"question":"What happened in the news today?"}'
+```
+
+Debug JSON route:
+
+```bash
+curl -X POST http://127.0.0.1:8787/ask.json \
+  -H "content-type: application/json" \
+  -H "x-api-key: your_shared_secret_here" \
   -d '{"question":"What happened in the news today?"}'
 ```
 
@@ -122,6 +145,12 @@ Set the Gemini API key as a Worker secret:
 
 ```bash
 npx wrangler secret put GEMINI_API_KEY
+```
+
+Set the shared secret used by Siri Shortcuts:
+
+```bash
+npx wrangler secret put WORKER_SHARED_SECRET
 ```
 
 Deploy the Worker:
@@ -140,28 +169,75 @@ Current deployed URL:
 
 - `https://vision-siri-ai.mikesapp.workers.dev`
 
+Example deployed test:
+
+```bash
+curl -X POST https://vision-siri-ai.mikesapp.workers.dev/ask \
+  -H "content-type: application/json" \
+  -H "x-api-key: your_shared_secret_here" \
+  -d '{"question":"What happened in the news today?"}'
+```
+
+## Siri Shortcut setup
+
+The current Siri flow is intentionally minimal and has been tested successfully against the deployed Worker.
+
+Recommended Shortcut actions:
+
+1. `Dictate Text`
+2. `Get Contents of URL`
+3. `Speak Text`
+
+Configure `Get Contents of URL` like this:
+
+- URL: `https://vision-siri-ai.mikesapp.workers.dev/ask`
+- Method: `POST`
+- Request Body: `JSON`
+- JSON field:
+  - `question` = `Dictated Text`
+- Headers:
+  - `content-type` = `application/json`
+  - `x-api-key` = your shared secret
+
+Why this works well:
+
+- `/ask` returns plain text, so the Shortcut does not need to parse JSON
+- the answer can be spoken directly with `Speak Text`
+- a bad or missing shared secret returns `Unauthorized`, which is useful for quick auth checks during testing
+
+Suggested `Dictate Text` setting:
+
+- `Stop Listening`: `After Pause`
+
+Recommended test phrase:
+
+- `What is the weather in New York today?`
+
+Practical note:
+
+- response volume is controlled by iPhone and Shortcuts speech behavior, not by the Worker
+- if spoken volume seems wrong, adjust volume while the Shortcut is actively speaking
+
 ## Known limitations
 
 The current version is intentionally simple, but there are important gaps:
 
-- the endpoint is public and does not yet require authentication
-- answers are shorter than normal chat, but could still be shortened further for Siri playback
-- the response includes raw source links, which may or may not be needed in the final spoken workflow
+- the app uses only a shared secret, not stronger user-specific authentication
+- answers are tuned for one or two short sentences, but prompt tuning will still need real-world iteration
+- the Siri route does not expose source links, so verification lives on the debug JSON route
 - there is no request logging, rate limiting, analytics, or abuse protection
 - there is no structured handling yet for follow-up questions or conversational context
-- there is no dedicated Siri Shortcut contract yet beyond basic HTTP JSON
+- the Siri Shortcut contract is intentionally minimal and may still need minor adjustments during device testing
 
 ## Suggested next steps
 
 Good next development tasks:
 
-- tighten the prompt so answers are usually one or two sentences
-- decide whether the final Siri flow should speak only `answer` and ignore `sources`
-- add lightweight authentication so the public Worker cannot be abused
-- define the exact Siri Shortcut request and response contract
-- add input normalization for dictated speech
-- add better error handling for network failures and empty grounding results
-- consider a dedicated route for a plain-text voice response if the shortcut does not need JSON
+- refine the Siri Shortcut experience now that the basic flow works end-to-end
+- decide whether the shortcut should expose any fallback/debug info to the user
+- add rate limiting or Cloudflare-side abuse controls if the endpoint will stay internet-accessible
+- consider request logging or lightweight analytics for troubleshooting real usage
+- explore dictated-speech cleanup beyond whitespace normalization if transcription issues show up
 
 ## Handoff notes for a new Codex session
 
@@ -170,12 +246,14 @@ If continuing this project in a new chat, the most useful starting context is:
 - this is a Cloudflare Worker project for accessibility, not a general chatbot
 - the main design goal is reliable, current, short answers for voice playback
 - the Worker already works locally and remotely with Gemini plus Google Search grounding
-- local secrets live in `.dev.vars`
+- local authenticated testing requires optional `.dev.vars`
+- deployed testing is the preferred path for auth validation
 - deployed secrets must live in Cloudflare Worker secrets
 - the main code path is in [src/index.js](/Users/mike/vision-siri-ai/src/index.js)
 - the current deployment config is in [wrangler.jsonc](/Users/mike/vision-siri-ai/wrangler.jsonc)
 - the deployed URL is `https://vision-siri-ai.mikesapp.workers.dev`
-- the next major product decision is how the Siri Shortcut should call this and what exact response format it should expect
+- the main Siri contract is authenticated `POST /ask` with a plain-text response
+- the debug route is authenticated `POST /ask.json` with structured JSON
 
 ## Security note
 
