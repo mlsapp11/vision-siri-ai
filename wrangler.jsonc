@@ -2,5 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "vision-siri-ai",
   "main": "src/index.js",
-  "compatibility_date": "2026-03-15"
+  "compatibility_date": "2026-03-15",
+  "vars": {
+    "GEMINI_MODEL": "gemini-2.5-flash-lite"
+  }
 }

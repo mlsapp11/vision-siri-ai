@@ -1,69 +1,182 @@
 # vision-siri-ai
 
-`vision-siri-ai` is a Cloudflare Worker project intended to help an iPhone user with vision impairment access AI answers through a voice-first Siri workflow.
+`vision-siri-ai` is a Cloudflare Worker that supports a voice-first Siri workflow for an iPhone user with vision impairment. The Worker accepts a short question, sends it to Google's Gemini API with live web grounding enabled, and returns a short answer that is easier to hear read aloud than a typical chat response.
 
-The goal is to keep the experience simple and familiar. Instead of asking the user to learn a new app or a more complex mobile interface, this project aims to let Siri trigger a routine request that reaches an AI service and returns a useful response with as little friction as possible.
+## Purpose
 
-## Project purpose
+This project is being built for a real accessibility need. The intended user already relies heavily on Siri and should not have to learn a new interface or navigate a complicated app. The system should feel lightweight, dependable, and easy to repeat by voice.
 
-This project is being built for a real accessibility need.
+That means the product priorities are:
 
-The intended user already relies on Siri as the primary way to use the iPhone and is not comfortable navigating broader iPhone features. The Worker in this repository is meant to act as a lightweight server-side broker between a Siri-triggered request and an AI system, so spoken questions can lead to high-quality AI answers in a workflow that feels natural and repeatable.
+- short spoken questions
+- short spoken answers
+- current information when the question is time-sensitive
+- minimal interaction friction
+- reliability over feature breadth
 
-## Current status
+## Current architecture
 
-The repository currently contains a minimal Cloudflare Worker starter so local development, GitHub version control, and Cloudflare deployment are all set up in a clean way.
+The app currently consists of one Cloudflare Worker:
 
-Right now the Worker returns a simple hello-world response. The next phase is to replace that placeholder behavior with an endpoint and request flow that can support the Siri-based AI use case.
+- [src/index.js](/Users/mike/vision-siri-ai/src/index.js): the HTTP interface and Gemini integration
+- [wrangler.jsonc](/Users/mike/vision-siri-ai/wrangler.jsonc): Worker config and non-secret vars
 
-## Development workflow
+Current request flow:
 
-This project is developed locally in VS Code and deployed to Cloudflare with Wrangler.
+1. Siri or another client sends a `POST` request to `/ask` with JSON like `{"question":"..."}`.
+2. The Worker validates the request and reads `GEMINI_API_KEY` from environment bindings.
+3. The Worker calls Gemini's `generateContent` endpoint using the `google_search` tool.
+4. Gemini returns a short answer plus grounding metadata.
+5. The Worker responds with JSON containing the original question, answer text, and extracted source links.
 
-Important tools:
+This is currently a stateless design:
 
-- `npm` installs and manages project dependencies.
-- `npx` runs project tools without requiring a separate global install.
-- `wrangler` is Cloudflare's command-line tool for running and deploying Workers.
+- no database
+- no user accounts
+- no file storage
+- no conversation memory
+- no authentication yet on the public endpoint
 
-Common commands:
+## Current behavior
+
+Routes exposed by the Worker:
+
+- `GET /` returns a basic status payload and route list
+- `GET /health` returns whether the Worker is configured plus the active model
+- `POST /ask` accepts a JSON body with a `question` string and returns a grounded answer
+
+Example request:
+
+```bash
+curl -X POST http://127.0.0.1:8787/ask \
+  -H "content-type: application/json" \
+  -d '{"question":"What is the weather in New York today?"}'
+```
+
+Example response shape:
+
+```json
+{
+  "ok": true,
+  "question": "What is the weather in New York today?",
+  "answer": "It is currently cloudy in New York with a temperature around 44 degrees.",
+  "sources": [
+    {
+      "title": "Weather information for New York, NY, US",
+      "url": "https://www.google.com/..."
+    }
+  ]
+}
+```
+
+## AI provider choice
+
+The current implementation uses:
+
+- `Gemini 2.5 Flash Lite`
+- Google AI Studio API key
+- Gemini `google_search` grounding for current web information
+
+This provider was chosen because the project needs up-to-date answers and the free tier is a good fit for low-volume testing.
+
+## Local development
+
+Install dependencies:
 
 ```bash
 npm install
-npm run dev
-npm run deploy
 ```
 
-What they do:
-
-- `npm install` downloads the project dependencies.
-- `npm run dev` starts the Worker locally for testing.
-- `npm run deploy` publishes the Worker to Cloudflare.
-
-## Git workflow
-
-The GitHub repository is the source of truth for the codebase.
-
-A normal development cycle looks like this:
+Create a local `.dev.vars` file in the project root:
 
 ```bash
-git add .
-git commit -m "Describe the change"
-git push
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash-lite
 ```
 
-This keeps the local code, the GitHub repo, and the deployed Cloudflare Worker aligned.
+Important:
 
-## Near-term direction
+- `.dev.vars` is for local development only
+- `.dev.vars` is ignored by git and must never be committed
+- use `.dev.vars.example` as the template
 
-Near-term work will likely include:
+Run locally:
 
-- defining the HTTP interface Siri or iPhone shortcuts will call
-- connecting the Worker to an AI provider
-- shaping responses so they work well in a voice-first interaction
-- handling authentication, privacy, and request limits carefully
-- keeping the user experience simple enough for someone who depends on Siri for accessibility
+```bash
+npm run dev
+```
 
-## Accessibility note
+Then test:
 
-This project should favor clarity, reliability, and low-friction interaction over feature breadth. A technically impressive workflow is less important than one that is easy to trigger, easy to trust, and easy to repeat by voice.
+```bash
+curl -X POST http://127.0.0.1:8787/ask \
+  -H "content-type: application/json" \
+  -d '{"question":"What happened in the news today?"}'
+```
+
+## Cloudflare deployment
+
+Production secrets should be stored in Cloudflare, not in source control.
+
+Set the Gemini API key as a Worker secret:
+
+```bash
+npx wrangler secret put GEMINI_API_KEY
+```
+
+Deploy the Worker:
+
+```bash
+npx wrangler deploy
+```
+
+Current non-secret config in [wrangler.jsonc](/Users/mike/vision-siri-ai/wrangler.jsonc):
+
+- `name`: `vision-siri-ai`
+- `compatibility_date`: `2026-03-15`
+- `vars.GEMINI_MODEL`: `gemini-2.5-flash-lite`
+
+Current deployed URL:
+
+- `https://vision-siri-ai.mikesapp.workers.dev`
+
+## Known limitations
+
+The current version is intentionally simple, but there are important gaps:
+
+- the endpoint is public and does not yet require authentication
+- answers are shorter than normal chat, but could still be shortened further for Siri playback
+- the response includes raw source links, which may or may not be needed in the final spoken workflow
+- there is no request logging, rate limiting, analytics, or abuse protection
+- there is no structured handling yet for follow-up questions or conversational context
+- there is no dedicated Siri Shortcut contract yet beyond basic HTTP JSON
+
+## Suggested next steps
+
+Good next development tasks:
+
+- tighten the prompt so answers are usually one or two sentences
+- decide whether the final Siri flow should speak only `answer` and ignore `sources`
+- add lightweight authentication so the public Worker cannot be abused
+- define the exact Siri Shortcut request and response contract
+- add input normalization for dictated speech
+- add better error handling for network failures and empty grounding results
+- consider a dedicated route for a plain-text voice response if the shortcut does not need JSON
+
+## Handoff notes for a new Codex session
+
+If continuing this project in a new chat, the most useful starting context is:
+
+- this is a Cloudflare Worker project for accessibility, not a general chatbot
+- the main design goal is reliable, current, short answers for voice playback
+- the Worker already works locally and remotely with Gemini plus Google Search grounding
+- local secrets live in `.dev.vars`
+- deployed secrets must live in Cloudflare Worker secrets
+- the main code path is in [src/index.js](/Users/mike/vision-siri-ai/src/index.js)
+- the current deployment config is in [wrangler.jsonc](/Users/mike/vision-siri-ai/wrangler.jsonc)
+- the deployed URL is `https://vision-siri-ai.mikesapp.workers.dev`
+- the next major product decision is how the Siri Shortcut should call this and what exact response format it should expect
+
+## Security note
+
+API keys must never be committed. If a key is ever exposed in chat, logs, screenshots, or source control, revoke it and replace it immediately.
