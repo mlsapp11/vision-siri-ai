@@ -43,6 +43,7 @@ Routes exposed by the Worker:
 
 - `GET /` returns a basic status payload and route list
 - `GET /health` returns whether the Worker is configured plus the active model
+- `GET /qbo/callback` renders a hosted QuickBooks OAuth callback page for manual completion in `mk-agents`
 - `POST /ask` accepts a JSON body with a `question` string and returns plain text for Siri
 - `POST /ask.json` accepts the same JSON body and returns debug-friendly JSON
 
@@ -168,6 +169,16 @@ Current non-secret config in [wrangler.jsonc](/Users/mike/vision-siri-ai/wrangle
 Current deployed URL:
 
 - `https://vision-siri-ai.mikesapp.workers.dev`
+
+QuickBooks production callback URL for `mk-agents`:
+
+- `https://vision-siri-ai.mikesapp.workers.dev/qbo/callback`
+
+That route is intentionally read-only and does not store tokens. It only displays the `code` and `realmId` returned by Intuit so the local `mk-agents` repo can finish the token exchange with:
+
+```bash
+npm run oauth:complete -- --code="..." --realm-id="..."
+```
 
 Example deployed test:
 
